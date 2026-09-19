@@ -1,0 +1,89 @@
+{
+  "description": "Gold test set for the Nimbus corpus. Answers are the CURRENT values. Questions tagged 'stale_trap' have an outdated value present in docs/changelog.md, and separate a pipeline with a working selection step from one without. Questions tagged 'precision_trap' have a correct answer that is a strict subset of a superficially similar fact elsewhere in the corpus, and separate precise retrieval from sloppy retrieval.",
+  "questions": [
+    {
+      "id": "q1",
+      "question": "What is the rate limit for a single API key?",
+      "answer": "100 requests per minute",
+      "tags": ["factual", "stale_trap"]
+    },
+    {
+      "id": "q2",
+      "question": "What is the maximum size of a job payload?",
+      "answer": "256 KB",
+      "tags": ["factual", "stale_trap"]
+    },
+    {
+      "id": "q3",
+      "question": "How long is a single job attempt allowed to run before it times out?",
+      "answer": "30 seconds",
+      "tags": ["factual"]
+    },
+    {
+      "id": "q4",
+      "question": "How many times will Nimbus attempt a job before marking it failed?",
+      "answer": "3 attempts",
+      "tags": ["factual"]
+    },
+    {
+      "id": "q5",
+      "question": "What are the possible job states?",
+      "answer": "queued, running, succeeded, failed, cancelled",
+      "tags": ["factual"]
+    },
+    {
+      "id": "q6",
+      "question": "What port does a self-hosted Nimbus server listen on by default?",
+      "answer": "8080",
+      "tags": ["factual", "stale_trap"]
+    },
+    {
+      "id": "q7",
+      "question": "How long are completed jobs retained before being purged?",
+      "answer": "7 days",
+      "tags": ["factual", "stale_trap"]
+    },
+    {
+      "id": "q8",
+      "question": "How do you authenticate a request to the Nimbus API?",
+      "answer": "Send the API key as a bearer token in the Authorization header",
+      "tags": ["factual"]
+    },
+    {
+      "id": "q9",
+      "question": "How many worker processes run by default on a self-hosted server?",
+      "answer": "4",
+      "tags": ["factual"]
+    },
+    {
+      "id": "q10",
+      "question": "What is the base URL of the hosted API?",
+      "answer": "https://api.nimbusqueue.io/v1",
+      "tags": ["factual"]
+    },
+    {
+      "id": "q11",
+      "question": "What is the base delay for the exponential backoff between retry attempts, before it doubles?",
+      "answer": "2 seconds",
+      "tags": ["factual"]
+    },
+    {
+      "id": "q12",
+      "question": "What HTTP method and path do you call to cancel a job?",
+      "answer": "POST /jobs/{id}/cancel",
+      "tags": ["factual"]
+    },
+    {
+      "id": "q13",
+      "question": "Which job states are considered terminal (a job in one of these will never change again)?",
+      "answer": "succeeded, failed, cancelled",
+      "tags": ["factual", "precision_trap"]
+    },
+    {
+      "id": "q14",
+      "question": "Besides polling, how can you be notified when a job finishes?",
+      "answer": "Register a webhook URL; Nimbus POSTs the final job result to it when the job reaches a terminal state",
+      "tags": ["factual"]
+    }
+  ]
+}
