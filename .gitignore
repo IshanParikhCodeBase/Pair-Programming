@@ -1,5 +1,6 @@
 .env
 lab1-context-engineering/.venv/
+lab1-context-engineering/.embedding_cache/
 __pycache__/
 *.pyc
 .DS_Store
