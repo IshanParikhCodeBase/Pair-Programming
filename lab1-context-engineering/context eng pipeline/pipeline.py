@@ -1,10 +1,14 @@
 """The context pipeline: clustering -> selection -> reranking -> compression.
 
 Each step is independently toggleable via --steps, so we can measure exactly
-what each one contributes to cost/accuracy. Reranking and compression aren't
-built yet (later sub-tasks) -- right now this pipeline only runs clustering +
-selection; asking for "rerank" or "compress" raises clearly instead of
-silently doing nothing.
+what each one contributes to cost/accuracy.
+
+Clustering and selection are corpus-level: they run once, before any question
+is asked, producing a smaller, deduplicated chunk pool. Reranking is
+question-level -- MMR needs a specific query to score against -- so it runs
+per question, at retrieval time, in place of plain top-K similarity.
+Compression then runs on whatever reranking (or plain top-K) retrieved for
+that question, as the final polish right before the prompt is built.
 """
 
 import argparse
@@ -18,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from clustering import DEFAULT_DISTANCE_THRESHOLD, cluster_chunks, group_by_cluster
 from selection import select_representatives
+from reranking import rerank
+from compression import compress_chunks
 from make_charts import load_runs, plot_cost_chart
 
 from contextlab import config
@@ -26,6 +32,7 @@ from contextlab.model_client import get_model
 from contextlab.retrieval import top_k
 
 TOP_K = 15
+MMR_LAMBDA = 0.7  # the brief's default
 SYSTEM_PROMPT = (
     "Answer the question using only the context provided below. Be concise: "
     "answer in as few words as possible, using the exact wording/values from "
@@ -35,10 +42,11 @@ SYSTEM_PROMPT = (
 
 
 def run_pipeline(chunks, chunk_vecs, steps=("cluster", "select")):
-    """Apply the enabled steps in order. Returns (surviving_chunks, surviving_vecs).
-
-    `steps` is a subset/order of ("cluster", "select", "rerank", "compress").
-    "select" requires "cluster" to have already produced groups.
+    """Apply the corpus-level steps (cluster, select) once, before any
+    question is asked. Returns (surviving_chunks, surviving_vecs). "rerank"
+    and "compress" are handled later, per question, in answer_question --
+    they're accepted in `steps` here but ignored, since this function only
+    prepares the shared candidate pool.
     """
     working_chunks, working_vecs = chunks, chunk_vecs
     groups = None
@@ -54,27 +62,29 @@ def run_pipeline(chunks, chunk_vecs, steps=("cluster", "select")):
         working_chunks = list(survivors.values())
         working_vecs = embed_texts([c["text"] for c in working_chunks])
 
-    if "rerank" in steps:
-        raise NotImplementedError("reranking isn't built yet")
-
-    if "compress" in steps:
-        raise NotImplementedError("compression isn't built yet")
-
     return working_chunks, working_vecs
 
 
-def build_prompt(question, retrieved_chunks):
-    context_block = "\n\n".join(
-        f"[{chunk['source']}]\n{chunk['text']}" for chunk, _ in retrieved_chunks
-    )
+def build_prompt(question, chunks):
+    context_block = "\n\n".join(f"[{c['source']}]\n{c['text']}" for c in chunks)
     return f"Context:\n{context_block}\n\nQuestion: {question}"
 
 
-def answer_question(question, chunks, chunk_vecs, model, k=TOP_K):
-    retrieved = top_k(question, chunks, chunk_vecs, k=min(k, len(chunks)))
-    prompt = build_prompt(question, retrieved)
+def retrieve(question, chunks, chunk_vecs, k, use_rerank):
+    if use_rerank:
+        results = rerank(question, chunks, chunk_vecs, k=min(k, len(chunks)), lambda_param=MMR_LAMBDA)
+    else:
+        results = top_k(question, chunks, chunk_vecs, k=min(k, len(chunks)))
+    return [c for c, _ in results]
+
+
+def answer_question(question, chunks, chunk_vecs, model, steps, k=TOP_K):
+    retrieved_chunks = retrieve(question, chunks, chunk_vecs, k, use_rerank=("rerank" in steps))
+    if "compress" in steps:
+        retrieved_chunks = compress_chunks(retrieved_chunks)
+    prompt = build_prompt(question, retrieved_chunks)
     response = model.generate(system=SYSTEM_PROMPT, user_message=prompt)
-    return response, retrieved
+    return response, retrieved_chunks
 
 
 def load_gold_questions():
@@ -89,7 +99,7 @@ def run(model_name, steps, out_path):
     pipeline_chunks, pipeline_vecs = run_pipeline(chunks, chunk_vecs, steps=steps)
     print(f"Pipeline steps: {steps}")
     print(f"Chunks before pipeline: {len(chunks)}")
-    print(f"Chunks after pipeline:  {len(pipeline_chunks)}\n")
+    print(f"Chunks after cluster+select: {len(pipeline_chunks)}\n")
 
     model = get_model(model_name)
     gold = load_gold_questions()
@@ -97,8 +107,8 @@ def run(model_name, steps, out_path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         for item in gold:
-            response, retrieved = answer_question(
-                item["question"], pipeline_chunks, pipeline_vecs, model
+            response, retrieved_chunks = answer_question(
+                item["question"], pipeline_chunks, pipeline_vecs, model, steps
             )
             record = {
                 "id": item["id"],
@@ -106,7 +116,7 @@ def run(model_name, steps, out_path):
                 "reference_answer": item["answer"],
                 "tags": item["tags"],
                 "model_answer": response.text,
-                "retrieved_chunk_ids": [c["id"] for c, _ in retrieved],
+                "retrieved_chunk_ids": [c["id"] for c in retrieved_chunks],
                 "input_tokens": response.input_tokens,
                 "output_tokens": response.output_tokens,
                 "input_cost": response.cost.input_cost,
@@ -127,18 +137,16 @@ def run(model_name, steps, out_path):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="mock", choices=["mock", "haiku"])
-    ap.add_argument("--steps", default="cluster,select")
+    ap.add_argument("--steps", default="cluster,select,rerank,compress")
+    ap.add_argument("--chart-name", default="cost_chart_phase1.png")
+    ap.add_argument("--chart-title", default="Phase 1 pipeline (full: cluster+select+rerank+compress) — cost per request (Claude Haiku 4.5)")
     args = ap.parse_args()
 
     steps = tuple(args.steps.split(","))
-    out_path = config.RESULTS_DIR / f"pipeline_runs_{args.model}.jsonl"
+    out_path = config.RESULTS_DIR / f"pipeline_runs_{args.model}_{'-'.join(steps)}.jsonl"
 
     run(args.model, steps, out_path)
 
     if args.model == "haiku":
         runs = load_runs(out_path)
-        plot_cost_chart(
-            runs,
-            config.RESULTS_DIR / "cost_chart_phase1.png",
-            "Phase 1 pipeline (clustering + selection) — cost per request (Claude Haiku 4.5)",
-        )
+        plot_cost_chart(runs, config.RESULTS_DIR / args.chart_name, args.chart_title)
